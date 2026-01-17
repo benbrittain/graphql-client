@@ -84,6 +84,13 @@ pub trait GraphQLQuery {
 
     /// Produce a GraphQL query struct that can be JSON serialized and sent to a GraphQL API.
     fn build_query(variables: Self::Variables) -> QueryBody<Self::Variables>;
+
+    /// Produce a persisted query body using the pre-computed SHA256 hash.
+    ///
+    /// This is for static persisted queries where the server has the query
+    /// pre-registered and only needs the hash to identify it. The query string
+    /// is not included in the request body.
+    fn build_persisted_query(variables: Self::Variables) -> PersistedQueryBody<Self::Variables>;
 }
 
 /// The form in which queries are sent over HTTP in most implementations. This will be built using the [`GraphQLQuery`] trait normally.
@@ -96,6 +103,76 @@ pub struct QueryBody<Variables> {
     /// The GraphQL operation name, as a string.
     #[serde(rename = "operationName")]
     pub operation_name: &'static str,
+}
+
+/// The persisted query extension format used by Apollo.
+///
+/// This is included in the `extensions` field of a [`PersistedQueryBody`].
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct PersistedQueryExtension {
+    /// The version of the persisted query protocol (always 1).
+    pub version: u8,
+    /// The SHA256 hash of the query string.
+    #[serde(rename = "sha256Hash")]
+    pub sha256_hash: &'static str,
+}
+
+/// Extensions object containing persisted query information.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct PersistedQueryExtensions {
+    /// The persisted query extension.
+    #[serde(rename = "persistedQuery")]
+    pub persisted_query: PersistedQueryExtension,
+}
+
+/// Request body for static persisted queries (Apollo format).
+///
+/// Unlike [`QueryBody`], this omits the `query` field entirely since
+/// the server already has the query registered. Only the SHA256 hash
+/// is sent to identify the query.
+///
+/// Example JSON output:
+/// ```json
+/// {
+///   "operationName": "MyQuery",
+///   "variables": {},
+///   "extensions": {
+///     "persistedQuery": {
+///       "version": 1,
+///       "sha256Hash": "abc123..."
+///     }
+///   }
+/// }
+/// ```
+#[derive(Debug, Serialize)]
+pub struct PersistedQueryBody<Variables> {
+    /// The values for the variables.
+    pub variables: Variables,
+    /// The GraphQL operation name, as a string.
+    #[serde(rename = "operationName")]
+    pub operation_name: &'static str,
+    /// Extensions containing the persisted query hash.
+    pub extensions: PersistedQueryExtensions,
+}
+
+impl<Variables> PersistedQueryBody<Variables> {
+    /// Create a new persisted query body.
+    pub fn new(
+        variables: Variables,
+        operation_name: &'static str,
+        query_hash: &'static str,
+    ) -> Self {
+        Self {
+            variables,
+            operation_name,
+            extensions: PersistedQueryExtensions {
+                persisted_query: PersistedQueryExtension {
+                    version: 1,
+                    sha256_hash: query_hash,
+                },
+            },
+        }
+    }
 }
 
 /// Represents a location inside a query string. Used in errors. See [`Error`].
@@ -406,5 +483,51 @@ mod tests {
                 extensions: expected_extensions,
             }
         )
+    }
+
+    #[test]
+    fn persisted_query_body_serialization() {
+        #[derive(serde::Serialize)]
+        struct TestVariables {
+            id: String,
+        }
+
+        let body = PersistedQueryBody::new(
+            TestVariables {
+                id: "123".to_string(),
+            },
+            "MyQuery",
+            "abc123def456789",
+        );
+
+        let serialized = serde_json::to_value(&body).unwrap();
+
+        assert_eq!(
+            serialized,
+            json!({
+                "operationName": "MyQuery",
+                "variables": {"id": "123"},
+                "extensions": {
+                    "persistedQuery": {
+                        "version": 1,
+                        "sha256Hash": "abc123def456789"
+                    }
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn persisted_query_body_has_no_query_field() {
+        #[derive(serde::Serialize)]
+        struct EmptyVariables {}
+
+        let body = PersistedQueryBody::new(EmptyVariables {}, "MyQuery", "abc123");
+
+        let serialized = serde_json::to_string(&body).unwrap();
+        assert!(
+            !serialized.contains("\"query\""),
+            "Persisted query body should not contain a 'query' field"
+        );
     }
 }

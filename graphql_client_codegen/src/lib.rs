@@ -8,6 +8,7 @@ use proc_macro2::TokenStream;
 use quote::*;
 use schema::Schema;
 
+mod add_typename;
 mod codegen;
 mod codegen_options;
 /// Deprecation-related code
@@ -152,6 +153,7 @@ fn generate_module_token_stream_inner(
     for operation in &operations {
         let generated = generated_module::GeneratedModule {
             query_string: query_string.as_str(),
+            query_document,
             schema,
             resolved_query: &query,
             operation: &operation.1.name,
